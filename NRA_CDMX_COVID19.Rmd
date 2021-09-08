@@ -54,25 +54,28 @@ catalogo_categoria <- distinct(incidencia, categoria_delito)
 
 Cortes para el análisis:
 
-* 16-marzo-2019
-* 16-marzo-2020
-* 30-junio-2020
-* 30-junio-2021
+* Fecha de inicio de la cuarentena: 16-marzo-2020
+* Fecha final (corte disponible de datos): 30-junio-2021
+
 
 ```{r}
-fecha_inicial <- make_date(2019, 3, 16)
 fecha_cuarentena <- make_date(2020, 3, 16)
-fecha_movilidad <- make_date(2020, 6, 30)
-fecha_final <- make_date(2021, 6, 30)
+fecha_inicial <- fecha_cuarentena - period(1, "year")
+fecha_final <- fecha_cuarentena + period(1, "year")
+# fecha_final <- make_date(2021, 6, 30)
+# fecha_inicial <- fecha_cuarentena - (fecha_final - fecha_cuarentena)
 ```
 
 
 Filtrar los robos con violencia para el periodo de estudio, agregar variables de identificador único:
 ```{r}
+traduccion_robos <- read_csv("Datos/traduccion_robos.csv")
+
 robos_cv <-
   incidencia %>% 
   filter(between(date(fecha_hechos), fecha_inicial, fecha_final),
          str_detect(categoria_delito, "ROBO")) %>% 
+  left_join(traduccion_robos, by = c("categoria_delito" = "original")) %>% 
   mutate(mes_hechos = as_date(cut(fecha_hechos, breaks = "1 month"))) %>% 
   rowid_to_column("id") %>% 
   glimpse()
@@ -100,12 +103,13 @@ robos_cv %>%
 Identificar los robos con violencia con mayor incidencia:
 
 ```{r}
-ranking_robos <-
+ranking_robos_antes <-
   robos_cv %>% 
-  group_by(mes_hechos, categoria_delito) %>% 
+  filter(date(fecha_hechos) < fecha_cuarentena) %>% 
+  group_by(mes_hechos, traducido) %>% 
   count(name = "total_mes", na.rm = T) %>%
   ungroup() %>% 
-  group_by(categoria_delito) %>%
+  group_by(traducido) %>%
   summarize(total = sum(total_mes, na.rm = T),
             promedio = mean(total_mes, na.rm = T),
             minimo = min(total_mes, na.rm = T),
@@ -114,35 +118,57 @@ ranking_robos <-
   ungroup() %>% 
   mutate(ranking = dense_rank(desc(total)),
          porcentaje = total / sum(total, na.rm = T)) %>% 
-  arrange(desc(total))
+  arrange(desc(total)) %>% 
+  write_excel_csv("Salidas/estadisticos_por_robo_antes.csv")
 
-ranking_robos
+ranking_robos_antes
+```
+
+```{r}
+ranking_robos_despues <-
+  robos_cv %>% 
+  filter(date(fecha_hechos) >= fecha_cuarentena) %>% 
+  group_by(mes_hechos, traducido) %>% 
+  count(name = "total_mes", na.rm = T) %>%
+  ungroup() %>% 
+  group_by(traducido) %>%
+  summarize(total = sum(total_mes, na.rm = T),
+            promedio = mean(total_mes, na.rm = T),
+            minimo = min(total_mes, na.rm = T),
+            maximo = max(total_mes, na.rm = T),
+            desv_est = sd(total_mes, na.rm = T)) %>% 
+  ungroup() %>% 
+  mutate(ranking = dense_rank(desc(total)),
+         porcentaje = total / sum(total, na.rm = T)) %>% 
+  arrange(desc(total)) %>% 
+  write_excel_csv("Salidas/estadisticos_por_robo_despues.csv")
+
+ranking_robos_despues
 ```
 
 Los robos a transeúnte en vía pública y los robos de vehículo juntos acumulan el **70% de los delitos de alto impacto**.
 
 Analizar la tendencia para cada tipo de robo de alto impacto:
-```{r}
-categorias_prioritarias <-
-  ranking_robos %>% 
-  filter(ranking <= 2) %>% 
-  pull(categoria_delito)
-
+```{r fig.width=5.75}
 robos_cv %>% 
-  # filter(categoria_delito %in% categorias_prioritarias) %>% 
-  group_by(mes_hechos, categoria_delito) %>% 
+  group_by(mes_hechos, traducido) %>% 
   count(name = "total") %>% 
   ungroup() %>% 
-  complete(mes_hechos, nesting(categoria_delito), fill = list(total = 0)) %>% 
-  ggplot(aes(x = mes_hechos, y = total, group = categoria_delito)) +
+  complete(mes_hechos, nesting(traducido), fill = list(total = 0)) %>% 
+  ggplot(aes(x = mes_hechos, y = total, group = traducido)) +
   geom_line() +
   geom_smooth() +
-  labs(title = "High impact theft trending by type",
-       subtitle = "Monthly, December 2017 - June 2021",
+  geom_vline(xintercept = make_date(2020, 3, 16),
+             color = "red",
+             lty = "dotted") + 
+  labs(title = "High-impact robberies trending by type",
+       subtitle = "Monthly, March 16th 2019 - March 16th 2020",
        x = "Month",
-       y = "Thefts") +
-  facet_wrap(~categoria_delito,
-             scales = "free_y")
+       y = "Robberies") +
+  theme_bw() +
+  facet_wrap(~traducido,
+             scales = "free_y",
+             ncol = 5)
 ```
 
 ## Movilidad
@@ -362,6 +388,8 @@ robos_transeunte <-
 
 Aplicar el modelo de victimización repetida (*Near Repeat Analysis*), utilizando los parámetros definidos:
 ```{r}
+options(future.globals.maxSize= 891289600) # Subir límite de memoria para NearRepeat a 850MB = 850*1024^2 = 891289600
+
 robos_transeunte_nra <- 
   NearRepeat(x = robos_transeunte$x,
              y = robos_transeunte$y,
@@ -387,9 +415,9 @@ Establecer los parámetros del análisis, considerando lo siguiente:
 * 99 iteraciones
 
 ```{r}
-intervalo_espacial <- 150
+intervalo_espacial <- 250
 bandas_espacial <- 10
-intervalo_temporal <- 3
+intervalo_temporal <- 7
 bandas_temporal <- 10
 iteraciones <- 99
 ```
@@ -498,18 +526,20 @@ crear_lineas <- function(punto_id, conjunto_puntos, distancia, tiempo) {
 
 Definir los umbrales de tiempo y distancia:
 ```{r}
-distancia <- set_units(450, m)
-tiempo <- period(3, "days")
+distancia <- set_units(150, m)
+tiempo <- period(12, "days")
 ```
 
 Filtrar el delito y el periodo a analizar:
 ```{r}
-delito_analisis <- "ROBO A TRANSEUNTE EN VÍA PÚBLICA CON Y SIN VIOLENCIA"
-# delito <- "ROBO DE VEHÍCULO CON Y SIN VIOLENCIA"
+# delito_analisis <- "ROBO A TRANSEUNTE EN VÍA PÚBLICA CON Y SIN VIOLENCIA"
+delito_analisis <- "ROBO DE VEHÍCULO CON Y SIN VIOLENCIA"
+corte_inicio <- fecha_inicial
+corte_final <- fecha_cuarentena
 
 puntos <-
   robos_cv_puntos %>%
-  filter(between(fecha, fecha_inicial, fecha_cuarentena),
+  filter(between(fecha, corte_inicio, corte_final),
          categoria_delito == delito_analisis) %>% 
   glimpse()
 ```
@@ -576,9 +606,14 @@ while(length(puntos_por_procesar) > 0) {
 }
 ```
 
+```{r}
+save(lineas_et_totales, file = "Salidas/lineas_et_totales_450m_3d.RData")
+```
+
+
 Categorizar las líneas de interacción:
 ```{r}
-clasificacion <- classIntervals(lineas_et_totales$nodos, n = 4, style = "jenks")
+clasificacion <- classIntervals(lineas_et_totales$nodos, n = 4, style = "fisher")
 clasificacion
 ```
 
@@ -596,8 +631,8 @@ lineas_et_totales <-
 Visualizar mapa interactivo:
 ```{r}
 et <-
-  lineas_et_totales %>% 
-  filter(categoria %in% c("3", "4"))
+  lineas_et_totales %>%
+  filter(categoria %in% c("2", "3", "4"))
 
 tmap_mode("view")
 
@@ -627,19 +662,11 @@ tm_shape(mapa_base) +
 Guardar la capa:
 ```{r}
 st_write(lineas_et_totales, 
-         dsn = str_c("Salidas/lineas_et_rt_", 
+         dsn = str_c("Salidas/lineas_et_rv_", 
                      make_clean_names(corte_inicio), 
                      "_", 
-                     make_clean_names(corte_fin), 
+                     make_clean_names(corte_final), 
                      ".gpkg"),
          delete_dsn = T)
-```
-
-```{r}
-library(leaflet)
-
-leaflet() %>% 
-  addTiles() %>% 
-  addMeasure(primaryLengthUnit = "meter")
 ```
 
