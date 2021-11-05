@@ -1,16 +1,29 @@
 ---
-title: Near Repeat Analysis de Robos con Violencia en la CDMX durante pandemia de
-  COVID-19
-author: "Ana J. Alegre, Cristian Silva"
+title: Effects of COVID-19 in Mexico City: street robbery and vehicle theft spatio-temporal patterns
+author: "Ana J. Alegre (jalegre@centrogeo.edu.mx), Cristian Silva (csilva@centrogeo.edu.mx)"
 date: "8/28/2021"
 output: html_document
 ---
 
+## Introduction
+
+This interactive notebook written in RMarkdown format contains the data processing operations and algorithm mentioned in the *Effects of COVID-19 in Mexico City: street robbery and vehicle theft spatio-temporal patterns* article.
+
+## Data processing
+
+Setup RMarkdown options:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r}
+Increase the memory maximum size for R:
+```{r Increase R memory}
+options(future.globals.maxSize= 891289600) # Increase memory limit to 850MB = 850*1024^2 = 891289600
+```
+
+Load the required packages:
+```{r Load required packages}
+# It may be required to install previously these packages before loading:
 library(tidyverse)
 library(lubridate)
 library(sf)
@@ -18,75 +31,66 @@ library(janitor)
 library(mice)
 library(units)
 library(classInt)
-library(changepoint)
-library(strucchange)
 library(tmap)
-library(tmaptools)
 library(NearRepeat)
 ```
 
-Leer los datos de incidencia delictiva rportados por la FGJ:
-```{r}
-incidencia <-
-  read_csv("/Users/cristiansilva/OneDrive/Documentos/Bases de datos/CDMX/FGJ/carpetas_completa_junio_2021.csv.zip",
-           col_types = "--T--Tccccccccccnnc") %>% 
-  clean_names() %>% 
+Read the CDMX's crime incidence data:
+```{r Read crime data}
+crimes <-
+  read_csv("Data/carpetas_completa_junio_2021.csv.zip",
+           col_types = "--T--Tccccccccccnnc") %>%  # Specify data types and skip unused columns
+  clean_names() %>% # Clean column names
   glimpse()
 ```
 
-Obtener el catálogo de delitos a partir de los datos:
-```{r}
-catalogo_delitos <-
-  incidencia %>% 
+Get a crime catalog from the crime data:
+```{r Crime catalog}
+# Filter crime data to get unique crime categories :
+crime_catalog <-
+  crimes %>% 
   distinct(delito, categoria_delito) %>% 
   arrange(delito)
 
-# Filtrar los robos y guardar el catálogo de robos:
-catalogo_robos <-
-  catalogo_delitos %>% 
+# Filter robbery and save the catalog in a file:
+robbery_catalog <-
+  crime_catalog %>% 
   filter(str_detect(delito, "(ROBO).*(CON VIOLENCIA)")) %>% 
-  write_csv("Datos/catalogo_robos_cv.csv")
+  write_csv("Data/robbery_catalog_cv.csv")
 
-catalogo_robos
-
-catalogo_categoria <- distinct(incidencia, categoria_delito)
+# Visualize the robbery catalog:
+robbery_catalog
 ```
 
-Cortes para el análisis:
-
-* Fecha de inicio de la cuarentena: 16-marzo-2020
-* Fecha final (corte disponible de datos): 30-junio-2021
-
-
-```{r}
-fecha_cuarentena <- make_date(2020, 3, 16)
-fecha_inicial <- fecha_cuarentena - period(1, "year")
-fecha_final <- fecha_cuarentena + period(1, "year")
-# fecha_final <- make_date(2021, 6, 30)
-# fecha_inicial <- fecha_cuarentena - (fecha_final - fecha_cuarentena)
+To define the study period, we will take one year before and one year after the date when pandemics lockdown began on May 16, 2020.
+```{r Set study period dates}
+lockdown_date <- make_date(2020, 3, 16)
+date_start <- lockdown_date - period(1, "year")
+date_end <- lockdown_date + period(1, "year")
 ```
 
+Filter high impact robberies data for the period of study, adding an unique identificator column:
+```{r Filter high impact robberies}
+# Read english translation for robbery categories:
+robberies_translate <- read_csv("Data/robberies_translate.csv")
 
-Filtrar los robos con violencia para el periodo de estudio, agregar variables de identificador único:
-```{r}
-traduccion_robos <- read_csv("Datos/traduccion_robos.csv")
-
-robos_cv <-
-  incidencia %>% 
-  filter(between(date(fecha_hechos), fecha_inicial, fecha_final),
+# Filter high impact robberies and combine with english translation:
+hi_robberies <-
+  crimes %>% 
+  filter(between(date(fecha_hechos), date_start, date_end),
          str_detect(categoria_delito, "ROBO")) %>% 
-  left_join(traduccion_robos, by = c("categoria_delito" = "original")) %>% 
+  left_join(robberies_translate, by = c("categoria_delito" = "original")) %>% 
   mutate(mes_hechos = as_date(cut(fecha_hechos, breaks = "1 month"))) %>% 
   rowid_to_column("id") %>% 
   glimpse()
 ```
 
+## High impact robberies exploratory data analysis
 
-## Análisis exploratorio
-
-Visualizar la tendencia de delitos de alto impacto:
-```{r}
-robos_cv %>% 
+Visualize high impact robberies monthly trending: 
+```{r Monthly trending}
+# Create line plot:
+hi_robberies %>% 
   group_by(mes_hechos) %>% 
   count(name = "total") %>% 
   ungroup() %>% 
@@ -99,13 +103,11 @@ robos_cv %>%
        y = "Thefts")
 ```
 
-
-Identificar los robos con violencia con mayor incidencia:
-
-```{r}
-ranking_robos_antes <-
-  robos_cv %>% 
-  filter(date(fecha_hechos) < fecha_cuarentena) %>% 
+Identify which high impact robberies had the highest incidence before lockdown:
+```{r Robberies before lockdown stats}
+robberies_rank_before <-
+  hi_robberies %>% 
+  filter(date(fecha_hechos) < lockdown_date) %>% 
   group_by(mes_hechos, traducido) %>% 
   count(name = "total_mes", na.rm = T) %>%
   ungroup() %>% 
@@ -119,15 +121,16 @@ ranking_robos_antes <-
   mutate(ranking = dense_rank(desc(total)),
          porcentaje = total / sum(total, na.rm = T)) %>% 
   arrange(desc(total)) %>% 
-  write_excel_csv("Salidas/estadisticos_por_robo_antes.csv")
+  write_excel_csv("Output/robberies_before_stats.csv")
 
-ranking_robos_antes
+robberies_rank_before
 ```
 
-```{r}
-ranking_robos_despues <-
-  robos_cv %>% 
-  filter(date(fecha_hechos) >= fecha_cuarentena) %>% 
+Identify which high impact robberies had the highest incidence after lockdown:
+```{r Robberies after lockdown stats}
+robberies_rank_after <-
+  hi_robberies %>% 
+  filter(date(fecha_hechos) >= lockdown_date) %>% 
   group_by(mes_hechos, traducido) %>% 
   count(name = "total_mes", na.rm = T) %>%
   ungroup() %>% 
@@ -141,16 +144,14 @@ ranking_robos_despues <-
   mutate(ranking = dense_rank(desc(total)),
          porcentaje = total / sum(total, na.rm = T)) %>% 
   arrange(desc(total)) %>% 
-  write_excel_csv("Salidas/estadisticos_por_robo_despues.csv")
+  write_excel_csv("Output/robberies_after_stats.csv")
 
-ranking_robos_despues
+robberies_rank_after
 ```
 
-Los robos a transeúnte en vía pública y los robos de vehículo juntos acumulan el **70% de los delitos de alto impacto**.
-
-Analizar la tendencia para cada tipo de robo de alto impacto:
-```{r fig.width=5.75}
-robos_cv %>% 
+According the results below, street robbery and car theft both accumulate **70% of high impact crimes**. Create a line plot to analyze the trending for each high impact robbery category:
+```{r Trending per robbery category}
+hi_robberies %>% 
   group_by(mes_hechos, traducido) %>% 
   count(name = "total") %>% 
   ungroup() %>% 
@@ -171,13 +172,25 @@ robos_cv %>%
              ncol = 5)
 ```
 
-## Movilidad
+Convert data to spatial object and add a date variable without column: 
+```{r Convert to spatial}
+hi_robberies_points <- 
+  hi_robberies %>% 
+  st_as_sf(coords = c("longitud", "latitud"), na.fail = F) %>% 
+  st_set_crs(4326) %>% 
+  mutate(fecha = date(fecha_hechos)) %>% 
+  rowid_to_column("id_point") %>% 
+  glimpse()
+```
 
-### Apple
+## Mobility data analysis
 
-```{r}
-movilidad_apple <- 
-  read_csv("Datos/applemobilitytrends-2021-08-24.csv.zip") %>% 
+### Apple mobility data
+
+Read and filter Apple's mobility data for Mexico City:
+```{r Read Apple mobility data}
+mobility_apple <- 
+  read_csv("Data/applemobilitytrends-2021-08-24.csv.zip") %>% 
   pivot_longer(cols = (7:596),
                names_to = "date",
                values_to = "mobility") %>% 
@@ -188,9 +201,9 @@ movilidad_apple <-
   glimpse()
 ```
 
-Identificar las tendencias por tipo de transporte registrado:
-```{r}
-movilidad_apple %>% 
+Identify trendings per transport type reported:
+```{r Trending per transport type (Apple)}
+mobility_apple %>% 
   ggplot(aes(x = date, y = mobility)) +
   geom_line() +
   geom_smooth() +
@@ -201,46 +214,12 @@ movilidad_apple %>%
   facet_wrap(~transportation_type)
 ```
 
-Identificar los puntos de quiebre:
-```{r}
-# Filtrar los datos por tipo de transporte:
-movilidad_apple_transporte <-
-  movilidad_apple %>% 
-  filter(transportation_type == "walking")
+### Google mobility data
 
-# Obtener los puntos de quiebre
-movilidad_apple_pq <- breakpoints(mobility ~ date, data = movilidad_apple_transporte)
-
-# Identificar las fechas en los puntos de quiebre
-movilidad_apple_cortes <- 
-  movilidad_apple_transporte %>% 
-  slice(movilidad_apple_pq$breakpoints) %>% 
-  select(date)
-
-# Graficar la tendencia con los puntos de quiebre:
-movilidad_apple_transporte %>% 
-  ggplot(aes(x = date, y = mobility)) +
-  geom_line() +
-  geom_smooth() +
-  geom_vline(xintercept = movilidad_apple_cortes$date,
-             color = "red",
-             lty = "dashed") +
-  geom_text(data = movilidad_apple_cortes,
-            aes(x = date, y = 0, label = date),
-            color = "red") +
-  labs(title = "Apple Mobility Index",
-       subtitle = "Mexico City, January 2020 - July 2021",
-       x = "Date",
-       y = "Mobility")
-```
-
-
-### Google
-
-Leer datos de movilidad de Google:
-```{r}
-movilidad_google <-
-  read_csv("Datos/2020_MX_Region_Mobility_Report.csv.zip") %>% 
+Read and filter Google's mobility data for Mexico City:
+```{r Read Google mobility data}
+mobility_google <-
+  read_csv("Data/2020_MX_Region_Mobility_Report.csv.zip") %>% 
   filter(sub_region_1 == "Mexico City") %>% 
   pivot_longer(cols = (10:15),
                names_to = "mob_type",
@@ -248,9 +227,9 @@ movilidad_google <-
   glimpse()
 ```
 
-Identificar las tendencias por tipo de transporte registrado:
-```{r}
-movilidad_google %>% 
+Identify trendings per transport type reported:
+```{r Trending per transport type (Google)}
+mobility_google %>% 
   ggplot(aes(x = date, y = mobility, group = mob_type)) +
   geom_line() +
   geom_smooth() +
@@ -261,412 +240,306 @@ movilidad_google %>%
   facet_wrap(~mob_type)
 ```
 
-```{r}
-movilidad_google %>% 
+Review mobility type categories for Google's mobility data:
+```{r Mobility type categories}
+mobility_google %>% 
   distinct(mob_type)
 ```
 
+## Near repeat analysis (NRA)
 
-```{r}
-# Filtrar los datos por tipo de transporte:
-movilidad_google_transporte <-
-  movilidad_google %>% 
-  filter(mob_type == "transit_stations_percent_change_from_baseline")
+### Street robbery
 
-# Obtener los puntos de quiebre
-movilidad_google_pq <- breakpoints(mobility ~ date, data = movilidad_google_transporte)
+Set analysis parameters considering:
 
-# Identificar las fechas en los puntos de quiebre
-movilidad_google_cortes <- 
-  movilidad_google_transporte %>% 
-  slice(movilidad_google_pq$breakpoints) %>% 
-  select(date)
+* Spatial interval (`sds`): 150 meters x 10 bands
+* Temporal interval (`tds`): 3 days x 10 bands
+* 99 iterations
 
-# Graficar la tendencia con los puntos de quiebre:
-movilidad_google_transporte %>% 
-  ggplot(aes(x = date, y = mobility)) +
-  geom_line() +
-  geom_smooth() +
-  geom_vline(xintercept = movilidad_google_cortes$date,
-             color = "red",
-             lty = "dashed") +
-  geom_text(data = movilidad_google_cortes,
-            aes(x = date, y = -80, label = date),
-            color = "red") +
-  labs(title = "Google Mobility Index",
-       subtitle = "Mexico City, February 2020 - December 2020",
-       x = "Date",
-       y = "Mobility") +
-  theme_bw()
+```{r Street robbery NRA parameters}
+spatial_interval <- 150
+spatial_bands <- 10
+temporal_interval <- 3
+temporal_bands <- 10
+iterations <- 99
 ```
 
-
-OPCIONAL: Usando changepoints:
-```{r}
-apple_imp <- mice(select(movilidad_apple_transporte, date, mobility)) # Crear imputaciones para los valores vacíos
-
-apple_cp <-
-  complete(apple_imp) %>% # Completar la serie con los valores imputados
-  pull(mobility) %>% 
-  cpt.meanvar(method = "BinSeg")
-
-plot(apple_cp)
-
-apple_cortes <- 
-  movilidad_apple_transporte %>% 
-  slice(cpts(apple_cp)) %>% 
-  select(date)
-
-movilidad_apple_transporte %>% 
-  ggplot(aes(x = date, y = mobility)) +
-  geom_line() +
-  geom_smooth() +
-  geom_vline(xintercept = apple_cortes$date,
-             color = "red",
-             lty = "dashed") +
-  geom_text(data = apple_cortes,
-            aes(x = date, y = 0, label = date),
-            color = "red") +
-  labs(title = "Apple Mobility Index",
-       subtitle = "Mexico City, January 2020 - July 2021",
-       x = "Date",
-       y = "Mobility")
-```
-
-Convertir los datos de robo a capa espacial de puntos y agregar un campo de fecha sin hora:
-```{r}
-robos_cv_puntos <- 
-  robos_cv %>% 
-  st_as_sf(coords = c("longitud", "latitud"), na.fail = F) %>% 
-  st_set_crs(4326) %>% 
-  mutate(fecha = date(fecha_hechos)) %>% 
-  rowid_to_column("id_punto") %>% 
-  glimpse()
-```
-
-## Análisis de victimización repetida
-
-### Robo a transeúnte
-
-Establecer los parámetros del análisis, considerando lo siguiente:
-
-* Intervalos espaciales (`sds`): 150 metros x 5 bandas (alcance de 5 cuadras de 150 m)
-* Intervalos temporales (`tds`): 3 días x 5 bandas
-* 99 iteraciones
-
-```{r}
-intervalo_espacial <- 150
-bandas_espacial <- 10
-intervalo_temporal <- 3
-bandas_temporal <- 10
-iteraciones <- 99
-```
-
-Fijar una semilla de aleatorización para asegurar la reproducibilidad del análisis:
-```{r}
+Fix a randomization seed to ensure analysis reproducibility:
+```{r Set seed}
 set.seed(1234)
 ```
 
-Filtrar los robos a transeúnte durante el periodo anterior a la cuarentena y preparar los datos para el análisis de victimización repetida:
-```{r}
-robos_transeunte <-
-  robos_cv_puntos %>% 
+Filter street robbery data for the period before the lockdown and prepare it for NRA:
+```{r Prepare street robbery data}
+street_robberies <-
+  hi_robberies_points %>% 
   filter(categoria_delito == "ROBO A TRANSEUNTE EN VÍA PÚBLICA CON Y SIN VIOLENCIA",
-         between(fecha, fecha_inicial, fecha_cuarentena)) %>% 
-  st_transform(6369) %>% # Transformar a coordenadas proyectadas
-  select(fecha) # Conservar la fecha
+         between(fecha, date_start, lockdown_date)) %>% 
+  st_transform(6369) %>% # Transform to projected CRS
+  select(fecha) # Keep just the date variable
 
-robos_transeunte <-
-  robos_transeunte %>% 
-  bind_cols(as_tibble(st_coordinates(robos_transeunte))) %>% # Agregar variables de coordenadas X y Y
-  as_tibble() %>% # Convertir de tabla espacial a tabla plana
-  clean_names() %>% # Limpiar los nombres de las variables
+street_robberies <-
+  street_robberies %>% 
+  bind_cols(as_tibble(st_coordinates(street_robberies))) %>% # Add coordinates
+  as_tibble() %>% # Convert from spatial to plain tibble
+  clean_names() %>% # Clean variable names
   select(fecha, x, y) %>% 
-  remove_missing() %>% # Eliminar las filas incompletas.
+  remove_missing() %>% # Remove incomplete rows
   glimpse()
 ```
 
-Aplicar el modelo de victimización repetida (*Near Repeat Analysis*), utilizando los parámetros definidos:
-```{r}
-options(future.globals.maxSize= 891289600) # Subir límite de memoria para NearRepeat a 850MB = 850*1024^2 = 891289600
+Apply NRA model using the parameters defined below:
+```{r NRA model for street robberies}
+street_robberies_nra <- 
+  NearRepeat(x = street_robberies$x,
+             y = street_robberies$y,
+             time = street_robberies$fecha,
+             sds = seq(0, by = spatial_interval, length.out = spatial_bands),
+             tds = seq(0, by = temporal_interval, length.out = temporal_bands),
+             nrep = iterations)
 
-robos_transeunte_nra <- 
-  NearRepeat(x = robos_transeunte$x,
-             y = robos_transeunte$y,
-             time = robos_transeunte$fecha,
-             sds = seq(0, by = intervalo_espacial, length.out = bandas_espacial),
-             tds = seq(0, by = intervalo_temporal, length.out = bandas_temporal),
-             nrep = iteraciones)
-
-robos_transeunte_nra
+street_robberies_nra
 ```
 
-Visualizar los valores *p* para cada intervalo de distancia y tiempo:
-```{r Visualización del resultado}
-plot(robos_transeunte_nra)
+Visualize *p* values for each distance and time interval:
+```{r Visualize street robbery NRA}
+plot(street_robberies_nra)
 ```
 
-### Robo de vehículo
+### Vehicle theft
 
-Establecer los parámetros del análisis, considerando lo siguiente:
+Set analysis parameters considering:
 
-* Intervalos espaciales (`sds`): 300 metros x 5 bandas (alcance de 5 cuadras de 150 m)
-* Intervalos temporales (`tds`): 7 días x 5 bandas
-* 99 iteraciones
+* Spatial interval (`sds`): 250 meters x 10 bands
+* Temporal interval (`tds`): 7 days x 10 bands
+* 99 iterations
 
-```{r}
-intervalo_espacial <- 250
-bandas_espacial <- 10
-intervalo_temporal <- 7
-bandas_temporal <- 10
-iteraciones <- 99
+```{r Vehicle theft NRA parameters}
+spatial_interval <- 250
+spatial_bands <- 10
+temporal_interval <- 7
+temporal_bands <- 10
+iterations <- 99
 ```
 
-Filtrar los robos de vehículo durante el periodo anterior a la cuarentena y preparar los datos para el análisis de victimización repetida:
-```{r}
-robos_vehiculo <-
-  robos_cv_puntos %>% 
+Filter car theft data for the period before the lockdown and prepare it for NRA:
+```{r Prepare vehicle theft data}
+vehicle_theft <-
+  hi_robberies_points %>% 
   filter(categoria_delito == "ROBO DE VEHÍCULO CON Y SIN VIOLENCIA",
-         between(fecha, fecha_inicial, fecha_cuarentena)) %>% 
-  st_transform(6369) %>% # Transformar a coordenadas proyectadas
-  select(fecha) # Conservar la fecha
+         between(fecha, date_start, lockdown_date)) %>% 
+  st_transform(6369) %>% 
+  select(fecha) 
 
-robos_vehiculo <-
-  robos_vehiculo %>% 
-  bind_cols(as_tibble(st_coordinates(robos_vehiculo))) %>% # Agregar variables de coordenadas X y Y
-  as_tibble() %>% # Convertir de tabla espacial a tabla plana
-  clean_names() %>% # Limpiar los nombres de las variables
+vehicle_theft <-
+  vehicle_theft %>% 
+  bind_cols(as_tibble(st_coordinates(vehicle_theft))) %>% 
+  as_tibble() %>% 
+  clean_names() %>% 
   select(fecha, x, y) %>% 
-  remove_missing() %>% # Eliminar las filas incompletas.
+  remove_missing() %>% 
   glimpse()
 ```
 
-Aplicar el modelo de victimización repetida (*Near Repeat Analysis*), utilizando los parámetros definidos:
-```{r}
-robos_vehiculo_nra <- 
-  NearRepeat(x = robos_vehiculo$x,
-             y = robos_vehiculo$y,
-             time = robos_vehiculo$fecha,
-             sds = seq(0, by = intervalo_espacial, length.out = bandas_espacial),
-             tds = seq(0, by = intervalo_temporal, length.out = bandas_temporal),
-             nrep = iteraciones)
+Apply NRA model using the parameters defined below:
+```{r NRA model for vehicle theft}
+vehicle_theft_nra <- 
+  NearRepeat(x = vehicle_theft$x,
+             y = vehicle_theft$y,
+             time = vehicle_theft$fecha,
+             sds = seq(0, by = spatial_interval, length.out = spatial_bands),
+             tds = seq(0, by = temporal_interval, length.out = temporal_bands),
+             nrep = iterations)
 
-robos_vehiculo_nra
+vehicle_theft_nra
 ```
 
-Visualizar los valores *p* para cada intervalo de distancia y tiempo:
-```{r Visualización del resultado}
-plot(robos_vehiculo_nra)
+Visualize *p* values for each distance and time interval:
+```{r Visualize vehicle theft NRA}
+plot(vehicle_theft_nra)
 ```
 
-
-Guardar los análisis:
-```{r}
-save(robos_transeunte_nra, robos_vehiculo_nra, file = "Salidas/nra_150mx10_3dx10.Rdata")
+Save analysis data:
+```{r Save NRA results}
+save(street_robberies_nra, vehicle_theft_nra, file = "Output/nra_150mx10_3dx10.Rdata")
 ```
 
+## Spatio-temporal interactions
 
-## Interacciones espacio-temporales
-
-Definir un función para ubicar los puntos cercanos dentro del umbral de distancia y tiempo:
-```{r}
-buscar_cercanos <- function(punto_id, conjunto_puntos, distancia, tiempo) {
+Define a function for selecting near points within the distance and time thresholds:
+```{r Function for searching near points}
+search_near_points <- function(point_id, points_set, distance_threshold, time_threshold) {
   
-  punto <-
-    conjunto_puntos %>% 
-    filter(id_punto == punto_id)
+  point_origin <-
+    points_set %>% 
+    filter(id_point == point_id)
   
-  puntos_cercanos <-
-    conjunto_puntos %>% 
-    filter(between(fecha, punto$fecha - tiempo, punto$fecha + tiempo)) %>% 
-    filter(lengths(st_is_within_distance(x = ., y = punto, dist = distancia)) > 0) %>% 
-    pull(id_punto)
+  points_near <-
+    points_set %>% 
+    filter(between(fecha, point_origin$fecha - time_threshold, point_origin$fecha + time_threshold)) %>% 
+    filter(lengths(st_is_within_distance(x = ., y = point_origin, dist = distance_threshold)) > 0) %>% 
+    pull(id_point)
   
-  return(puntos_cercanos)
+  return(points_near)
 
 }
 ```
 
-Definir una función para crear líneas que conecten los puntos cercanos en tiempo y distancia:
-```{r}
-crear_lineas <- function(punto_id, conjunto_puntos, distancia, tiempo) {
+Define a function for creating the spatio-temporal interaction lines (STIL) connecting points near on time and distance:
+```{r Function for creating lines}
+create_sti_line <- function(point_id, points_set, distance_threshold, time_threshold) {
   
-  punto <- 
-    conjunto_puntos %>% 
-    filter(id_punto == punto_id)
+  point_origin <- 
+    points_set %>% 
+    filter(id_point == point_id)
   
-  id_puntos_cercanos <- buscar_cercanos(punto_id, conjunto_puntos, distancia, tiempo)
+  points_id_near <- search_near_points(point_id, points_set, distance_threshold, time_threshold)
   
-  for(i in id_puntos_cercanos) {
-    punto_cercano <-
-      conjunto_puntos %>% 
-      filter(id_punto == i)
+  for(i in points_id_near) {
+    point_near <-
+      points_set %>% 
+      filter(id_point == i)
     
-    linea <- 
-      matrix(c(as.numeric(st_coordinates(punto)),
-               as.numeric(st_coordinates(punto_cercano))),
+    new_line <- 
+      matrix(c(as.numeric(st_coordinates(point_origin)),
+               as.numeric(st_coordinates(point_near))),
              ncol = 2,
              byrow = TRUE) %>% 
       st_linestring() %>% 
       st_sfc(crs = 4326) %>%
       st_sf()
     
-    if(!exists("lineas_et")){
-      lineas_et <- linea
+    if(!exists("sti_lines")){
+      sti_lines <- new_line
     } else {
-      lineas_et <- bind_rows(lineas_et, linea)
+      sti_lines <- bind_rows(sti_lines, new_line)
     }
     
   }
   
-  return(lineas_et)
+  return(sti_lines)
   
 }
 ```
 
-Definir los umbrales de tiempo y distancia:
-```{r}
-distancia <- set_units(150, m)
-tiempo <- period(12, "days")
+Define space and time thresholds:
+```{r Space and time thresholds}
+distance_threshold <- set_units(150, m)
+time_threshold <- period(12, "days")
 ```
 
-Filtrar el delito y el periodo a analizar:
-```{r}
-# delito_analisis <- "ROBO A TRANSEUNTE EN VÍA PÚBLICA CON Y SIN VIOLENCIA"
-delito_analisis <- "ROBO DE VEHÍCULO CON Y SIN VIOLENCIA"
-corte_inicio <- fecha_inicial
-corte_final <- fecha_cuarentena
+Filter crime and period to analyze:
+```{r Filter crime and period}
+analyzed_crime <- "ROBO A TRANSEUNTE EN VÍA PÚBLICA CON Y SIN VIOLENCIA"
+# analyzed_crime <- "ROBO DE VEHÍCULO CON Y SIN VIOLENCIA"
+# period_start <- date_start
+period_start <- lockdown_date - period(3, units = "week")
+period_end <- lockdown_date
 
-puntos <-
-  robos_cv_puntos %>%
-  filter(between(fecha, corte_inicio, corte_final),
-         categoria_delito == delito_analisis) %>% 
+points_original <-
+  hi_robberies_points %>%
+  filter(between(fecha, period_start, period_end),
+         categoria_delito == analyzed_crime) %>% 
   glimpse()
 ```
- 
-Procesar los puntos de incidencia:
-```{r}
-puntos_por_procesar <- puntos$id_punto
 
-if(exists("lineas_et_totales")) rm(lineas_et_totales)
+Process crime spatial points:
+```{r Process points}
+points_to_process <- points_original$id_point
 
-while(length(puntos_por_procesar) > 0) {
+if(exists("sti_lines_total")) rm(sti_lines_total)
+
+while(length(points_to_process) > 0) {
   
-  puntos_restantes <- first(puntos_por_procesar)
-  puntos_acumulados <- puntos_restantes
+  points_left <- first(points_to_process)
+  points_accumulated <- points_left
   
-  # Ubicar los puntos conectados dentro de la distancia y el tiempo determinados:
-  while(length(puntos_restantes) > 0) {
+  # Search for points near in time and distance thresholds:
+  while(length(points_left) > 0) {
     
-    puntos_encontrados <- unlist(map(puntos_restantes, 
-                                     buscar_cercanos,
-                                     puntos,
-                                     distancia,
-                                     tiempo))
+    points_found <- unlist(map(points_left, 
+                               search_near_points,
+                               points_original,
+                               distance_threshold,
+                               time_threshold))
     
-    puntos_restantes <- puntos_encontrados[!(puntos_encontrados %in% puntos_acumulados)]
+    points_left <- points_found[!(points_found %in% points_accumulated)]
     
-    puntos_acumulados <- 
-      c(puntos_acumulados, puntos_encontrados) %>% 
+    points_accumulated <- 
+      c(points_accumulated, points_found) %>% 
       unique() %>% 
       sort()
     
   }
   
-  # Construir las líneas de interacción espacio-temporal entre los puntos ubicados:
-  puntos_et <-
-    puntos %>% 
-    filter(id_punto %in% puntos_acumulados)
+  # Build spatio temporal interaction lines between the near points found:
+  sti_points <-
+    points_original %>% 
+    filter(id_point %in% points_accumulated)
   
-  if(nrow(puntos_et) > 1) {
+  if(nrow(sti_points) > 1) {
     
-    linea_et <- 
-      map_df(puntos_et$id_punto,
-             crear_lineas,
-             puntos_et,
-             distancia,
-             tiempo) %>% 
-      filter(as.numeric(st_length(geometry)) > 0 ) %>% # Eliminar líneas creadas por puntos contra sí mismos
-      distinct() %>% # Eliminar posibles líneas duplicadas
+    sti_line <- 
+      map_df(sti_points$id_point,
+             create_sti_line,
+             sti_points,
+             distance_threshold,
+             time_threshold) %>% 
+      filter(as.numeric(st_length(geometry)) > 0 ) %>% # Remove lines connecting a point with itself
+      distinct() %>% # Remove duplicated lines
       st_combine() %>% 
       st_sf() %>% 
       st_set_crs(4326) %>% 
-      mutate(nodos = length(puntos_acumulados))
-      
-      if(exists("lineas_et_totales")) {
-        lineas_et_totales <- bind_rows(lineas_et_totales, linea_et)
-      } else {
-        lineas_et_totales <- linea_et
-      }
+      mutate(nodos = length(points_accumulated))
+    
+    if(exists("sti_lines_total")) {
+      sti_lines_total <- bind_rows(sti_lines_total, sti_line)
+    } else {
+      sti_lines_total <- sti_line
+    }
     
   }
   
-  puntos_por_procesar <- puntos_por_procesar[!(puntos_por_procesar %in% puntos_acumulados)]
+  points_to_process <- points_to_process[!(points_to_process %in% points_accumulated)]
   
 }
 ```
 
-```{r}
-save(lineas_et_totales, file = "Salidas/lineas_et_totales_450m_3d.RData")
+Categorize STILs:
+```{r Categorize spatio-temporal lines}
+classification <- classIntervals(sti_lines_total$nodos, n = 4, style = "fisher")
+classification
 ```
 
-
-Categorizar las líneas de interacción:
-```{r}
-clasificacion <- classIntervals(lineas_et_totales$nodos, n = 4, style = "fisher")
-clasificacion
-```
-
-
-Categorizar las líneas por el número de nodos que conectan:
-```{r}
-lineas_et_totales <-
-  lineas_et_totales %>%
+Categorize lines by the number of connected nodes:
+```{r Categorize lines}
+sti_lines_total <-
+  sti_lines_total %>%
   mutate(categoria = cut(nodos, 
-                         breaks = clasificacion$brks,
-                         labels = c(1:(length(clasificacion$brks) - 1)))) %>% 
+                         breaks = classification$brks,
+                         labels = c(1:(length(classification$brks) - 1)))) %>% 
   glimpse()
 ```
 
-Visualizar mapa interactivo:
-```{r}
-et <-
-  lineas_et_totales %>%
-  filter(categoria %in% c("2", "3", "4"))
-
+Visualize STILs in an interactive map:
+```{r Map visualization of STIL}
 tmap_mode("view")
 
-tm_shape(et) +
+sti_lines_total %>%
+  filter(categoria %in% c("2", "3", "4")) %>% 
+  tm_shape() +
   tm_basemap(alpha = 0.5) +
   tm_lines(col = "categoria", 
            palette = "YlOrRd",
            title.col = "Interaction category")
 ```
 
-
-Visualizar mapa para impresión:
-```{r}
-tmap_mode("plot")
-
-mapa_base <- read_osm(et, ext = 1.1, type = "stamen-toner")
-
-tm_shape(mapa_base) +
-  tm_rgb(alpha = 0.3) +
-  tm_shape(et) +
-  tm_lines(col = "categoria", 
-           palette = "YlOrRd",
-           title.col = "Interaction category") +
-  tm_layout(legend.bg.color = "white")
-```
-
-Guardar la capa:
-```{r}
-st_write(lineas_et_totales, 
-         dsn = str_c("Salidas/lineas_et_rv_", 
-                     make_clean_names(corte_inicio), 
-                     "_", 
-                     make_clean_names(corte_final), 
-                     ".gpkg"),
+Save the STIL layer in a file:
+```{r Save STIL layer}
+st_write(sti_lines_total, 
+         dsn = str_glue("Output/sti_lines-{date_start}-{date_end}_{file_timestamp}.gpkg",
+                        date_start = make_clean_names(period_start),
+                        date_end = make_clean_names(period_end),
+                        file_timestamp = make_clean_names(now())),
          delete_dsn = T)
 ```
-
