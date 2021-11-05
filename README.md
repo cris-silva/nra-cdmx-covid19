@@ -10,6 +10,6 @@ As a result of the changes in social behavior due to lockdown measures aimed to 
 
 ## Contact the authors
 
-Ana J. Alegre-Mondragón [jalegre@centrogeo.edu.mx](mailto:jalegre@centrogeo.edu.mx)
-Cristian Silva-Arias [jalegre@centrogeo.edu.mx](mailto:csilva@centrogeo.edu.mx)
+* Ana J. Alegre-Mondragón [jalegre@centrogeo.edu.mx](mailto:jalegre@centrogeo.edu.mx)
+* Cristian Silva-Arias [jalegre@centrogeo.edu.mx](mailto:csilva@centrogeo.edu.mx)
 
